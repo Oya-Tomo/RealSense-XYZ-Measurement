@@ -29,10 +29,10 @@ def analysis_blob(binary_img):
 
     maxblob = {}
 
-    maxblob["upper_left"] = (data[:, 0][max_index], data[:, 1][max_index])
-    maxblob["width"] = data[:, 2][max_index]
-    maxblob["height"] = data[:, 3][max_index]
-    maxblob["area"] = data[:, 4][max_index]
+    # maxblob["upper_left"] = (data[:, 0][max_index], data[:, 1][max_index])
+    # maxblob["width"] = data[:, 2][max_index]
+    # maxblob["height"] = data[:, 3][max_index]
+    # maxblob["area"] = data[:, 4][max_index]
     maxblob["center"] = center[max_index]
 
     return maxblob
@@ -54,20 +54,18 @@ def get_depth(depth_frame, x, y):
             return None
 
 
-    print("depth:", int(depth * 1000) / 1000, end="   ")
-
     return x, y, depth
 
 def get_xyz_from_camera(x_px, y_px, depth):
     #get x ratio
     x_dis = x_px - 640
-    h_angle = 180/math.pi * math.atan(x_dis / 674.4192801798158)
-    x_tan = math.tan(math.radians(h_angle))
+    x_tan = x_dis / 674.4192801798158
+    # h_angle = 180/math.pi * math.atan(x_tan)
 
     #get y ratio
     y_dis = y_px - 360
-    v_angle = 180/math.pi * math.atan(y_dis / 649.4571918977125)
-    y_tan = math.tan(math.radians(v_angle))
+    y_tan = y_dis / 649.4571918977125
+    # v_angle = 180/math.pi * math.atan(y_tan)
 
     depth_ratio = math.sqrt(x_tan**2 + y_tan**2 + 1)
 
@@ -80,6 +78,17 @@ def get_xyz_from_camera(x_px, y_px, depth):
 
     return x_m, y_m, z_m
 
+def convert_data_xyz(x, y, z, angle):
+    #Please put datas of distance from camera to thing.
+    cos = math.cos(math.radians(angle))
+    sin = math.sin(math.radians(angle))
+
+    y = y * -1
+    y_m = -z * sin + y * cos
+    z_m = z * cos + y * sin
+
+    # return x, y_m, z_m
+    return x, y_m, z_m
 
 
 pipeline = rs.pipeline()
@@ -89,57 +98,67 @@ config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
 # config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
 # config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
 
-LOOP_TIME = 0.05
 last_time = 0
 clock = pygame.time.Clock()
 time_txt = open("time.txt", encoding="utf-8", mode="a")
 
+
 print("Start streaming")
-pipeline.start(config)
+profile = pipeline.start(config)
+
+try:
+    while True:
+
+        frames = pipeline.wait_for_frames()
+        depth_frame = frames.get_depth_frame()
+        color_frame = frames.get_color_frame()
 
 
-while cv2.waitKey(1) < 0:
+        depth_image = np.asanyarray(depth_frame.get_data())
+        color_image = np.asanyarray(color_frame.get_data())
 
-    frames = pipeline.wait_for_frames()
-    depth_frame = frames.get_depth_frame()
-    color_frame = frames.get_color_frame()
+        color_intrinsics = color_frame.profile.as_video_stream_profile().intrinsics
 
-    depth_image = np.asanyarray(depth_frame.get_data())
-    color_image = np.asanyarray(color_frame.get_data())
+        # depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(
+            # depth_image, alpha=0.04), cv2.COLORMAP_JET)
 
-    color_intrinsics = color_frame.profile.as_video_stream_profile().intrinsics
+        mask = detect(color_image)
+        try:
+            target = analysis_blob(mask)
 
-    depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(
-        depth_image, alpha=0.04), cv2.COLORMAP_JET)
+            center_x = int(target["center"][0])
+            center_y = int(target["center"][1])
 
-    mask = detect(color_image)
-    try:
-        target = analysis_blob(mask)
+            # print("x : ", center_x, "y : ", center_y, end="   ")
+            data = get_depth(depth_frame, center_x, center_y)
+            if data != None:
+                xyz = get_xyz_from_camera(data[0], data[1], data[2])
+                print(round(xyz[0], 5),round(xyz[1], 5),round(xyz[2], 5), end="|")
 
-        center_x = int(target["center"][0])
-        center_y = int(target["center"][1])
+                xyz = convert_data_xyz(xyz[0], xyz[1], xyz[2], 0)
+                print(round(xyz[0], 5),round(xyz[1], 5),round(xyz[2], 5))
 
-        print("x : ", center_x, "y : ", center_y, end="   ")
-        data = get_depth(depth_frame, center_x, center_y)
-        if data != None:
-            xyz = get_xyz_from_camera(data[0], data[1], data[2])
-            print(xyz)
+            cv2.circle(color_image, (data[0], data[1]), 5, (0, 255, 0),
+                    thickness=1, lineType=cv2.LINE_AA)
+        except Exception as e:
+            print("Error : couldn`t get xyz .")
 
-        cv2.circle(color_image, (data[0], data[1]), 5, (0, 255, 0),
-                   thickness=1, lineType=cv2.LINE_AA)
-    except Exception as e:
-        print(e)
-        # print("Error : couldn`t get xyz .")
+        color_image = cv2.resize(color_image, dsize=(960, 540))
+        color_image = cv2.line(color_image, (480, 0), (480, 540), (0,255,0))
+        color_image = cv2.line(color_image, (0, 270), (960, 270), (0,255,0))
+        cv2.imshow("RealSense  Color Image", color_image)
+        # cv2.imshow("RealSense  Mask image", mask)
+        # cv2.imshow("RealSense  Depth Image", depth_colormap)
 
-    color_image = cv2.resize(color_image, dsize=(960, 540))
-    color_image = cv2.line(color_image, (480, 0), (480, 540), (0,255,0))
-    color_image = cv2.line(color_image, (0, 270), (960, 270), (0,255,0))
-    cv2.imshow("RealSense  Color Image", color_image)
-    # cv2.imshow("RealSense  Mask image", mask)
-    # cv2.imshow("RealSense  Depth Image", depth_colormap)
+        if cv2.waitKey(1) & 0xff == 27 :
+            break
 
-    clock.tick(20)
-    print(str(time.time() - last_time), file=time_txt)
-    last_time = time.time()
+        clock.tick(20)
+        print(str(time.time() - last_time), file=time_txt)
+        last_time = time.time()
 
-time_txt.close()
+
+finally:
+    time_txt.close()
+    pipeline.stop()
+    cv2.destroyAllWindows()
